@@ -4,7 +4,8 @@ import pandas as pd
 class Processor:
     def __init__(self, data_dir):
         self.data_dir = data_dir
-        self.output_dir = data_dir.parent / "processed"
+        self.output_dir = data_dir / "processed"
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def process_and_save(self):
         df_train_features = pd.read_csv(self.data_dir / "dengue_features_train.csv")

@@ -4,11 +4,70 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import FeatureUnion, Pipeline
 from sklearn.preprocessing import PolynomialFeatures, RobustScaler
 
+from src.datapipeline.processor import Processor
+
+
+def create_lag_features(data, n_in=1, n_out=1, dropna=True):
+    n_vars = 1 if isinstance(data, list) else data.shape[1]
+
+    df = pd.DataFrame(data)
+    cols = []
+    col_names = []
+    for i in reversed(range(n_in)):
+        cols.append(df.shift(i))
+        col_names.extend(
+            [f"var{j + 1}(t)" for j in range(n_vars)]
+            if i == 0
+            else [f"var{j + 1}(t-{i})" for j in range(n_vars)]
+        )
+    for i in range(1, n_out):
+        cols.append(df.shift(-i))
+        col_names.extend(f"var{j + 1}(t+{i})" for j in range(n_vars))
+    lag_features = pd.concat(cols, axis=1)
+    lag_features.columns = col_names
+    if dropna:
+        lag_features.dropna(inplace=True)
+    return lag_features
+
+
+def create_train_lag_features(data, n_in):
+    data_wide = create_lag_features(data.drop("total_cases", axis=1), n_in)
+    data_wide.drop(
+        ["var1(t)", "var2(t)", "var3(t)", "var4(t)", "var5(t)"],
+        axis=1,
+        inplace=True,
+    )
+    data_wide["total_cases"] = data["total_cases"]
+    return data_wide
+
+
+def create_test_lag_features(train_data, test_data, city, n_in):
+    data_wide = (
+        train_data.drop(["total_cases"], axis=1)
+        .iloc[-n_in:, :]
+        .append(test_data.drop(["city", "weekofyear", "year"], axis=1))
+        .reset_index(drop=True)
+    )
+    data_wide = create_lag_features(data_wide, n_in)
+    data_wide.drop(
+        ["var1(t)", "var2(t)", "var3(t)", "var4(t)", "var5(t)"],
+        axis=1,
+        inplace=True,
+    )
+    data_wide["city"] = city
+    data_wide["year"] = test_data["year"]
+    data_wide["weekofyear"] = test_data["weekofyear"]
+    return data_wide
+
 
 class Loader:
     def __init__(self, data_dir):
-        self.data_dir = data_dir
-        self.output_dir = data_dir.parent / "features"
+        processor = Processor(data_dir)
+        processor.process_and_save()
+
+        self.input_dir = processor.output_dir
+        self.output_dir = self.input_dir.parent / "features"
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
         self.pipeline_sj = self.get_pipeline()
         self.pipeline_iq = self.get_pipeline()
@@ -29,7 +88,7 @@ class Loader:
         )
 
     def transform_train_data(self, numeric_cols):
-        df_train = pd.read_csv(self.data_dir / "train.csv")
+        df_train = pd.read_csv(self.input_dir / "train.csv")
         rows_sj = df_train["city"] == "sj"
         rows_iq = df_train["city"] == "iq"
 
@@ -76,7 +135,7 @@ class Loader:
         return train_features_sj, train_features_iq
 
     def transform_test_data(self, numeric_cols):
-        df_test = pd.read_csv(self.data_dir / "test.csv")
+        df_test = pd.read_csv(self.input_dir / "test.csv")
         rows_sj = df_test["city"] == "sj"
         rows_iq = df_test["city"] == "iq"
 
@@ -105,3 +164,28 @@ class Loader:
         test_features_iq["weekofyear"] = df_test_iq["weekofyear"]
 
         return test_features_sj, test_features_iq
+
+    def transform_and_save(self, numeric_cols, n_in):
+        train_features_sj, train_features_iq = self.transform_train_data(numeric_cols)
+        test_features_sj, test_features_iq = self.transform_test_data(numeric_cols)
+
+        train_sj_wide = create_train_lag_features(train_features_sj, n_in)
+        train_iq_wide = create_train_lag_features(train_features_iq, n_in)
+        test_sj_wide = create_test_lag_features(
+            train_features_sj, test_features_sj, "sj", n_in
+        )
+        test_iq_wide = create_test_lag_features(
+            train_features_iq, test_features_iq, "iq", n_in
+        )
+
+        train_features_sj.to_csv(self.output_dir / "sj_train.csv", index=False)
+        train_features_iq.to_csv(self.output_dir / "iq_train.csv", index=False)
+        test_features_sj.to_csv(self.output_dir / "sj_test.csv", index=False)
+        test_features_iq.to_csv(self.output_dir / "iq_test.csv", index=False)
+
+        train_sj_wide.to_csv(self.output_dir / "sj_train_lag.csv", index=False)
+        train_iq_wide.to_csv(self.output_dir / "iq_train_lag.csv", index=False)
+        test_sj_wide.to_csv(self.output_dir / "sj_test_lag.csv", index=False)
+        test_iq_wide.to_csv(self.output_dir / "iq_test_lag.csv", index=False)
+
+        return train_sj_wide, train_iq_wide, test_sj_wide, test_iq_wide
